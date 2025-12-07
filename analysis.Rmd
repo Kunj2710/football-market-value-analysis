@@ -1,0 +1,323 @@
+---
+title: "Term_Project"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-11-29"
+---
+```{r lib, include=FALSE}
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(car)
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## Step 1: LOAD, SELECT, AND RENAME CORE COLUMNS
+```{r Step1}
+df_raw <- read.csv("PlayerValueData.csv")
+
+# Select and rename all necessary columns (including those needed for calculation)
+df_working <- df_raw %>%
+  # Select and rename columns (R automatically converts spaces to dots)
+  select(
+    Market_Value = Value, Age, Position, League, 
+    Total_Minutes = Min..20.21., Total_90s = Total.Mins.90..20.21.,
+    Goals_90 = Gls.90..20.21., Assists_90 = Ast.90..20.21.,
+    # Select the raw counts needed for calculating per-90 rates later
+    Raw_Tackles = Total.Number.of.Players.Tackled..20.21.,
+    Raw_Interceptions = Total.Interceptions..20.21.
+  )
+```
+## Step 2: CLEANING AND RELIABILITY FILTERING
+```{r Step2}
+# Drop rows missing critical performance metrics
+df_working <- df_working %>%
+  drop_na(Total_Minutes, Goals_90, Raw_Tackles, Raw_Interceptions)
+
+# Filter for reliable per-90 statistics (at least 400 minutes played)
+df_working <- df_working %>%
+  filter(Total_Minutes >= 400)
+
+# Check remaining size (Should be 1594 rows)
+print(paste("Rows after cleaning and reliability filtering:", nrow(df_working)))
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+
+## Step 3: FEATURE ENGINEERING
+```{r Step3}
+# 3.1 Create the Major_Position factor variable
+df_working <- df_working %>%
+  mutate(
+    Major_Position = case_when(
+      str_detect(tolower(Position), "attack") ~ "Forward",
+      str_detect(tolower(Position), "midfield") ~ "Midfielder",
+      str_detect(tolower(Position), "defender") ~ "Defender",
+      TRUE ~ "Other"
+    ),
+    # 3.2 CALCULATE final per-90 defensive metrics (The Missing Step!)
+    Tackles_90 = Raw_Tackles / Total_90s,
+    Interceptions_90 = Raw_Interceptions / Total_90s
+  ) %>%
+  # Remove 'Other' positions (Goalkeepers, etc.)
+  filter(Major_Position != "Other")
+
+# Check remaining size (Should be 1594 rows)
+print(paste("Rows after position filter and feature engineering:", nrow(df_working)))
+print("Position Distribution:")
+print(table(df_working$Major_Position))
+```
+## Step 4: FINAL SELECTION, FACTORING, AND SAMPLING
+```{r Step4}
+df_final_clean <- df_working %>%
+  select(
+    Market_Value, Age, Major_Position, League, Total_Minutes, 
+    Goals_90, Assists_90, Tackles_90, Interceptions_90
+  )
+# Convert necessary columns to factors
+df_final_clean$Major_Position <- as.factor(df_final_clean$Major_Position)
+df_final_clean$League <- as.factor(df_final_clean$League)
+
+# Set the Seed for Reproducibility (Crucial for the final report!)
+set.seed(42) 
+
+# Randomly sample down to exactly 900 rows (The final project data set)
+df_final_900 <- df_final_clean %>%
+  sample_n(size = 900, replace = FALSE)
+
+# Check the final structure
+print(paste("Final Analytical Data Set Size:", nrow(df_final_900), "rows."))
+str(df_final_900)
+
+# Save this final file for submission alongside your R script
+write.csv(df_final_900, "soccer_player_value_cleaned_project_data.csv", row.names = FALSE)
+```
+## Q.1 - What factors predict a player's market value?(MLR)
+```{r Q.1}
+df_final_900 <- df_final_900 %>%
+  mutate(Log_Market_Value = log(Market_Value)) # Create the new column
+model_best <- lm(
+  Log_Market_Value ~ Goals_90 + Assists_90 + Tackles_90 + Interceptions_90 +
+    Age + log(Total_Minutes) +
+    League ,
+   data = df_final_900
+)
+summary(model_best)
+vif(model_best)
+```
+  
+  
+## Q.2 - Do Positions Have Different Market Values? (ANOVA)
+```{r Q.2}
+anova_model <- aov(Market_Value ~ Major_Position, data = df_final_900)
+summary(anova_model)
+
+TukeyHSD(anova_model)
+
+library(ggplot2)
+ggplot(df_final_900, aes(x = Major_Position, y = Market_Value, fill = Major_Position)) +
+  geom_boxplot() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Market Value Distribution by Position",
+       x = "Position",
+       y = "Market Value") +
+  theme_minimal()
+```
+
+
+
+## Q.3 - League vs High-Value Players (Chi-square Test)
+```{r Q.3}
+ df_final_900 <- df_final_900 %>%
+  mutate(High_Value = ifelse(Market_Value > 10000000, 1, 0))
+table(df_final_900$League, df_final_900$High_Value)
+
+chisq.test(table(df_final_900$League, df_final_900$High_Value))
+library(ggplot2)
+
+ggplot(df_final_900, aes(x = League, fill = as.factor(High_Value))) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of High-Value Players by League",
+       x = "League",
+       y = "Proportion",
+       fill = "High Value (1 = Yes)") +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+
+```
+
+
+## Q.4 - Define “Versatile Player” Based on Stats(MLR) and OR(odds ratio)
+```{r Q.4}
+df_final_900 <- df_final_900 %>%
+  mutate(
+    Versatile = ifelse(
+      Goals_90 >= quantile(Goals_90, 0.50) &
+        Assists_90 >= quantile(Assists_90, 0.50) &
+        Tackles_90 >= quantile(Tackles_90, 0.50),
+      1, 0
+    )
+  )
+
+vers_model <- glm(
+  Versatile ~ Age + Total_Minutes + Major_Position,
+  data = df_final_900,
+  family = "binomial"
+)
+
+summary(vers_model)
+exp(coef(vers_model))
+exp(confint(vers_model))
+
+
+df_final_900 <- df_final_900 %>%
+  mutate(
+    Versatility_Score = 
+      scale(Goals_90) * 0.4 +
+      scale(Assists_90) * 0.3 +
+      scale(Tackles_90) * 0.3
+  )
+ggplot(df_final_900, aes(x = Goals_90 + Assists_90, y = Tackles_90 + Interceptions_90)) +
+  geom_point(alpha = 0.5, aes(color = Major_Position)) +
+  labs(
+    x = "Attacking Contribution",
+    y = "Defensive Contribution",
+     title = "Identifying Versatile Players"
+  ) +
+  theme_minimal()
+```
+
+
+## Q.5 - Young talent using two sample proportion test
+```{r Q.5}
+df_final_900 <- df_final_900 %>%
+  mutate(Young = ifelse(Age < 23, 1, 0))
+
+df_two_leagues <- df_final_900 %>%
+  filter(League %in% c("Premier League", "La Liga"))
+df_two_leagues <- df_two_leagues %>%
+  droplevels()
+
+table(df_two_leagues$League, df_two_leagues$Young)
+prop.test(table(df_two_leagues$League, df_two_leagues$Young))
+
+library(ggplot2)
+
+ggplot(df_two_leagues, aes(x = League, fill = as.factor(Young))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    title = "Young Player Proportion (<23) in EPL vs La Liga",
+    x = "League",
+    y = "Percentage of Young Players",
+    fill = "Young (1 = Yes)"
+  ) +
+  theme_minimal()
+```
+
+
+## Q.6 - Aging Star Discount Analysis
+```{r Q.6}
+df_final_900 <- df_final_900 %>%
+  mutate(Attacking_90 = Goals_90 + Assists_90)
+
+att_median <- median(df_final_900$Attacking_90, na.rm = TRUE)
+
+df_high_att <- df_final_900 %>%
+  filter(Attacking_90 >= att_median)
+
+model_age_discount <- lm(
+  Market_Value ~ Age + Attacking_90,
+  data = df_high_att
+)
+
+summary(model_age_discount)
+
+df_high_att <- df_high_att %>%
+  mutate(
+    Age_Group = cut(
+      Age,
+      breaks = c(-Inf, 22, 26, 30, Inf),
+      labels = c("U23", "23-26", "27-30", "31+")
+    )
+  )
+
+group_means <- df_high_att %>%
+  group_by(Age_Group) %>%
+  summarise(
+    n = n(),
+    mean_Attacking_90 = mean(Attacking_90, na.rm = TRUE),
+    mean_Market_Value = mean(Market_Value, na.rm = TRUE)
+  )
+
+print(group_means)
+
+u23_values <- df_high_att$Market_Value[df_high_att$Age_Group == "U23"]
+old_values <- df_high_att$Market_Value[df_high_att$Age_Group == "31+"]
+
+t_test_age <- t.test(u23_values, old_values, var.equal = FALSE)
+t_test_age
+
+ggplot(df_high_att, aes(x = Age, y = Market_Value)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Aging Star Discount: Market Value vs Age\n(High Attacking Players)",
+    x = "Age (years)",
+    y = "Market Value (Euro)"
+  ) +
+  theme_minimal()
+```
+## Q.7 - Overrated or Underrated
+
+```{r Q.7}
+
+summary(model_best)
+
+df_final_900$Pred_Log_Value <- predict(model_best, newdata = df_final_900)
+df_final_900$Predicted_Value <- exp(df_final_900$Pred_Log_Value)
+df_final_900$Residual <- df_final_900$Market_Value - df_final_900$Predicted_Value
+df_final_900$Residual_z <- as.numeric(scale(df_final_900$Residual))
+top_undervalued <- df_final_900 %>%
+  arrange(Residual_z) %>%
+  head(10)
+
+top_undervalued
+top_overvalued <- df_final_900 %>%
+  arrange(desc(Residual_z)) %>%
+  head(10)
+
+top_overvalued
+
+library(ggplot2)
+
+ggplot(df_final_900, aes(x = Predicted_Value, y = Market_Value, color = Residual_z)) +
+  geom_point(alpha = 0.6, size = 2) +
+  scale_color_gradient2(
+    low = "blue",
+    mid = "grey80",
+    high = "red",
+    midpoint = 0,
+    name = "Residual Z-Score"
+  ) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    title = "Hidden Bargains Index: Predicted vs Actual Market Value",
+    x = "Predicted Market Value (Model-Based)",
+    y = "Actual Market Value",
+    subtitle = "Points below dashed line are undervalued; above line are overvalued"
+  ) +
+  theme_minimal()
+```
+
+
