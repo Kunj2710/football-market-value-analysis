@@ -268,6 +268,25 @@ old_values <- df_high_att$Market_Value[df_high_att$Age_Group == "31+"]
 t_test_age <- t.test(u23_values, old_values, var.equal = FALSE)
 t_test_age
 
+# Q.6b - Does the discount survive controls? The t-test above is a raw
+# difference; it does not adjust for league, position, minutes or output.
+df_high_att <- df_high_att %>% mutate(Age_Group = relevel(Age_Group, ref = "U23"))
+model_age_controlled <- lm(
+  log(Market_Value) ~ Age_Group + Attacking_90 + League + Major_Position + log(Total_Minutes),
+  data = df_high_att
+)
+summary(model_age_controlled)
+# % difference in value vs U23, holding the controls fixed (31+ is about -81%)
+exp(coef(model_age_controlled)[grep("Age_Group", names(coef(model_age_controlled)))]) - 1
+
+# Is the discount specific to high performers? Age x output interaction on all 900.
+model_interaction <- lm(
+  log(Market_Value) ~ Age * Attacking_90 + League + Major_Position +
+    log(Total_Minutes) + Tackles_90 + Interceptions_90,
+  data = df_final_900
+)
+summary(model_interaction)   # Age:Attacking_90 is not significant (p ~ 0.74)
+
 ggplot(df_high_att, aes(x = Age, y = Market_Value)) +
   geom_point(alpha = 0.5) +
   geom_smooth(method = "lm", se = TRUE) +
